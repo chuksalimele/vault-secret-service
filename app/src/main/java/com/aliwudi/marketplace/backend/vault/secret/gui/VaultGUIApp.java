@@ -1,28 +1,35 @@
 package com.aliwudi.marketplace.backend.vault.secret.gui;
 
-import com.aliwudi.marketplace.backend.vault.secret.service.VaultSecretService;
 import com.formdev.flatlaf.FlatLightLaf;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.context.annotation.Bean;
+import org.springframework.vault.authentication.TokenAuthentication;
+import org.springframework.vault.client.VaultEndpoint;
 import org.springframework.vault.core.VaultTemplate;
+import org.springframework.boot.ApplicationRunner;
 
 import javax.swing.*;
 import javax.swing.border.TitledBorder;
 import javax.swing.table.DefaultTableModel;
+import javax.swing.table.TableCellRenderer;
 import java.awt.*;
+import java.awt.event.MouseAdapter;
+import java.awt.event.MouseEvent;
 import java.io.*;
+import java.net.URI;
 import java.nio.file.*;
 import java.util.*;
-import org.springframework.boot.ApplicationRunner;
+import org.springframework.vault.authentication.ClientAuthentication;
 
-@SpringBootApplication(scanBasePackages = "com.aliwudi.marketplace.backend.vault.secret.service")
+@SpringBootApplication
 public class VaultGUIApp {
 
     private static final String LOCAL_HISTORY_FILE = "secrets_history.dat";
-    private static final String ENCRYPTION_KEY = "change_this_key"; // For demo purposes only
+    private static final String ENCRYPTION_KEY = "change_this_key";
 
     private static DefaultTableModel tableModel;
+    private static final String VAULT_CONFIG_FILE = "vault_config.properties";
 
     public static void main(String[] args) {
         System.setProperty("java.awt.headless", "false");
@@ -31,11 +38,11 @@ public class VaultGUIApp {
     }
 
     @Bean
-    public ApplicationRunner applicationRunner(VaultTemplate vaultTemplate) {
-        return args -> SwingUtilities.invokeLater(() -> createAndShowGUI(vaultTemplate));
+    public ApplicationRunner applicationRunner() {
+        return args -> SwingUtilities.invokeLater(this::createAndShowGUI);
     }
 
-    private void createAndShowGUI(VaultTemplate vaultTemplate) {
+    private void createAndShowGUI() {
         JFrame frame = new JFrame("Vault Secret Manager");
         frame.setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
         frame.setSize(800, 600);
@@ -43,6 +50,83 @@ public class VaultGUIApp {
 
         JPanel mainPanel = new JPanel(new BorderLayout(10, 10));
         mainPanel.setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
+
+        final VaultTemplate[] vaultTemplateRef = {null};
+
+        Properties vaultConfig = loadVaultConfig();
+        String vaultAddress = vaultConfig.getProperty("vault.url", "http://127.0.0.1:8200");
+        String vaultToken = vaultConfig.getProperty("vault.token", "");
+
+        // Vault Configuration Panel
+        JPanel configPanel = new JPanel(new GridBagLayout());
+        configPanel.setBorder(BorderFactory.createTitledBorder("Vault Server Configuration"));
+
+        GridBagConstraints c = new GridBagConstraints();
+        c.insets = new Insets(5, 5, 5, 5);
+        c.gridx = 0;
+        c.gridy = 0;
+        configPanel.add(new JLabel("Vault Address:"), c);
+
+        c.gridx = 1;
+        c.fill = GridBagConstraints.HORIZONTAL;
+        c.weightx = 1.0;
+        JTextField urlField = new JTextField(vaultAddress);
+        configPanel.add(urlField, c);
+
+        c.gridx = 2;
+        c.fill = GridBagConstraints.NONE;
+        c.weightx = 0;
+        JButton applyButton = new JButton("Apply");
+        configPanel.add(applyButton, c);
+        c.gridx = 3;
+        configPanel.add(new JLabel("Vault Token:"), c);
+
+        c.gridx = 4;
+        c.weightx = 1.0;
+        JPasswordField tokenField = new JPasswordField(vaultToken, 20);
+        configPanel.add(tokenField, c);
+
+        // 👁️ Toggle button
+        c.gridx = 5;
+        c.weightx = 0;
+        JToggleButton showToggle = new JToggleButton("👁");
+        showToggle.setFocusable(false);
+        showToggle.setMargin(new Insets(2, 5, 2, 5));
+        char defaultEcho = (new JPasswordField()).getEchoChar();
+
+        showToggle.addActionListener(e -> {
+            if (showToggle.isSelected()) {
+                tokenField.setEchoChar((char) 0);
+                showToggle.setText("🙈");
+            } else {
+                tokenField.setEchoChar(defaultEcho);
+                showToggle.setText("👁");
+            }
+        });
+        configPanel.add(showToggle, c);
+
+        applyButton.addActionListener(e -> {
+            String newAddress = urlField.getText().trim();
+            String newToken = tokenField.getText().trim();
+
+            if (!newAddress.isEmpty() && !newToken.isEmpty()) {
+                try {
+                    VaultEndpoint endpoint = VaultEndpoint.from(new URI(newAddress));
+                    ClientAuthentication auth = new TokenAuthentication(newToken);
+                    VaultTemplate newTemplate = new VaultTemplate(endpoint, auth);
+                    vaultTemplateRef[0] = newTemplate;
+
+                    saveVaultConfig(newAddress, newToken);
+
+                    JOptionPane.showMessageDialog(frame, "Vault configuration applied.", "Success", JOptionPane.INFORMATION_MESSAGE);
+                } catch (Exception ex) {
+                    JOptionPane.showMessageDialog(frame, "Failed to apply Vault config: " + ex.getMessage(), "Error", JOptionPane.ERROR_MESSAGE);
+                }
+            } else {
+                JOptionPane.showMessageDialog(frame, "Vault address and token must not be empty", "Error", JOptionPane.ERROR_MESSAGE);
+            }
+
+        });
 
         JPanel inputPanel = new JPanel(new GridBagLayout());
         inputPanel.setBorder(BorderFactory.createTitledBorder(BorderFactory.createEtchedBorder(), "Secret Entry", TitledBorder.LEFT, TitledBorder.TOP));
@@ -64,37 +148,106 @@ public class VaultGUIApp {
         JTextField valueField = new JTextField();
         JButton saveButton = new JButton("Save Secret");
 
-        gbc.gridx = 0; gbc.gridy = 0;
+        gbc.gridx = 0;
+        gbc.gridy = 0;
         inputPanel.add(new JLabel("Backend:"), gbc);
         gbc.gridx = 1;
         inputPanel.add(backendField, gbc);
 
-        gbc.gridx = 0; gbc.gridy = 1;
+        gbc.gridx = 0;
+        gbc.gridy = 1;
         inputPanel.add(new JLabel("Context:"), gbc);
         gbc.gridx = 1;
         inputPanel.add(contextField, gbc);
 
-        gbc.gridx = 0; gbc.gridy = 2;
+        gbc.gridx = 0;
+        gbc.gridy = 2;
         inputPanel.add(new JLabel("Key:"), gbc);
         gbc.gridx = 1;
         inputPanel.add(keyField, gbc);
 
-        gbc.gridx = 0; gbc.gridy = 3;
+        gbc.gridx = 0;
+        gbc.gridy = 3;
         inputPanel.add(new JLabel("Value:"), gbc);
         gbc.gridx = 1;
         inputPanel.add(valueField, gbc);
 
-        gbc.gridx = 1; gbc.gridy = 4;
+        gbc.gridx = 1;
+        gbc.gridy = 4;
         inputPanel.add(saveButton, gbc);
 
         String[] columnNames = {"Backend", "Context", "Key", "Value", "Action"};
-        tableModel = new DefaultTableModel(columnNames, 0);
-        JTable table = new JTable(tableModel);
+        tableModel = new DefaultTableModel(columnNames, 0) {
+            @Override
+            public boolean isCellEditable(int row, int column) {
+                return false;
+            }
+        };
+
+        JTable table = new JTable(tableModel) {
+            public TableCellRenderer getCellRenderer(int row, int column) {
+                if (column == 4) {
+                    return new ActionRenderer();
+                }
+                return super.getCellRenderer(row, column);
+            }
+        };
+
+        table.addMouseListener(new MouseAdapter() {
+            public void mousePressed(MouseEvent e) {
+                int row = table.rowAtPoint(e.getPoint());
+                int col = table.columnAtPoint(e.getPoint());
+                if (col == 4) {
+                    JPopupMenu popup = new JPopupMenu();
+                    JMenuItem viewItem = new JMenuItem("View");
+                    JMenuItem deleteItem = new JMenuItem("Delete");
+
+                    String backend = (String) tableModel.getValueAt(row, 0);
+                    String context = (String) tableModel.getValueAt(row, 1);
+                    String key = (String) tableModel.getValueAt(row, 2);
+                    String compoundKey = backend + "::" + context + "::" + key;
+
+                    viewItem.addActionListener(ev -> {
+                        try {
+                            for (String line : Files.readAllLines(Paths.get(LOCAL_HISTORY_FILE))) {
+                                if (line.startsWith(compoundKey + "::")) {
+                                    String[] parts = line.split("::", 4);
+                                    if (parts.length == 4) {
+                                        JOptionPane.showMessageDialog(frame, "Value: " + decrypt(parts[3]), "Secret", JOptionPane.INFORMATION_MESSAGE);
+                                    }
+                                    break;
+                                }
+                            }
+                        } catch (IOException ex) {
+                            ex.printStackTrace();
+                        }
+                    });
+
+                    deleteItem.addActionListener(ev -> {
+                        if (vaultTemplateRef[0] == null) {
+                            return;
+                        }
+                        int confirm = JOptionPane.showConfirmDialog(frame, "Are you sure you want to delete this secret?", "Confirm", JOptionPane.YES_NO_OPTION);
+                        if (confirm == JOptionPane.YES_OPTION) {
+                            try {
+                                String path = backend + "/data/" + context + "/" + key;
+                                vaultTemplateRef[0].delete(path);
+                                Files.write(Paths.get(LOCAL_HISTORY_FILE), Files.readAllLines(Paths.get(LOCAL_HISTORY_FILE)).stream().filter(l -> !l.startsWith(compoundKey + "::")).toList());
+                                tableModel.removeRow(row);
+                            } catch (IOException ex) {
+                                ex.printStackTrace();
+                            }
+                        }
+                    });
+
+                    popup.add(viewItem);
+                    popup.add(deleteItem);
+                    popup.show(table, e.getX(), e.getY());
+                }
+            }
+        });
+
         table.setRowHeight(28);
-        table.getColumn("Action").setCellRenderer(new ButtonRenderer());
-        table.getColumn("Action").setCellEditor(new ButtonEditorWithDelete(new JCheckBox(), vaultTemplate));
-
-
         JScrollPane scrollPane = new JScrollPane(table);
         JPanel tablePanel = new JPanel(new BorderLayout());
         tablePanel.setBorder(BorderFactory.createTitledBorder(BorderFactory.createEtchedBorder(), "Saved Secrets", TitledBorder.LEFT, TitledBorder.TOP));
@@ -103,6 +256,10 @@ public class VaultGUIApp {
         loadSecretsHistory();
 
         saveButton.addActionListener(e -> {
+            if (vaultTemplateRef[0] == null) {
+                JOptionPane.showMessageDialog(frame, "Vault is not configured.", "Error", JOptionPane.ERROR_MESSAGE);
+                return;
+            }
             String backend = ((String) backendField.getSelectedItem()).trim();
             String context = ((String) contextField.getSelectedItem()).trim();
             String key = keyField.getText().trim();
@@ -113,16 +270,11 @@ public class VaultGUIApp {
                 return;
             }
 
-            if (backend.startsWith("Select") || context.startsWith("Select")) {
-                JOptionPane.showMessageDialog(frame, "Please select a valid backend and context", "Error", JOptionPane.ERROR_MESSAGE);
-                return;
-            }
-
             String path = backend + "/data/" + context + "/" + key;
             try {
                 Map<String, Object> data = new HashMap<>();
                 data.put(key, value);
-                vaultTemplate.write(path, Collections.singletonMap("data", data));
+                vaultTemplateRef[0].write(path, Collections.singletonMap("data", data));
 
                 for (int i = 0; i < tableModel.getRowCount(); i++) {
                     if (tableModel.getValueAt(i, 0).equals(backend) && tableModel.getValueAt(i, 1).equals(context) && tableModel.getValueAt(i, 2).equals(key)) {
@@ -130,8 +282,7 @@ public class VaultGUIApp {
                         break;
                     }
                 }
-
-                tableModel.addRow(new Object[]{backend, context, key, "****", "View/Delete"});
+                tableModel.addRow(new Object[]{backend, context, key, "****", "⋮"});
                 saveSecretToFile(backend, context, key, value);
                 persistComboBoxItem("backends.txt", backend, backendField);
                 persistComboBoxItem("contexts.txt", context, contextField);
@@ -144,11 +295,41 @@ public class VaultGUIApp {
             }
         });
 
-        mainPanel.add(inputPanel, BorderLayout.NORTH);
+        JPanel topPanel = new JPanel();
+        topPanel.setLayout(new BoxLayout(topPanel, BoxLayout.Y_AXIS));
+        topPanel.add(configPanel);
+        topPanel.add(Box.createRigidArea(new Dimension(0, 10))); // spacing
+        topPanel.add(inputPanel);
+
+        mainPanel.add(topPanel, BorderLayout.PAGE_START); // ✅ now stacks both correctly
+
         mainPanel.add(tablePanel, BorderLayout.CENTER);
+
         frame.getContentPane().add(mainPanel);
         SwingUtilities.invokeLater(() -> keyField.requestFocusInWindow());
         frame.setVisible(true);
+    }
+
+    private Properties loadVaultConfig() {
+        Properties props = new Properties();
+        Path path = Paths.get(VAULT_CONFIG_FILE);
+        if (Files.exists(path)) {
+            try (InputStream in = Files.newInputStream(path)) {
+                props.load(in);
+            } catch (IOException ignored) {
+            }
+        }
+        return props;
+    }
+
+    private void saveVaultConfig(String url, String token) {
+        Properties props = new Properties();
+        props.setProperty("vault.url", url);
+        props.setProperty("vault.token", token);
+        try (OutputStream out = Files.newOutputStream(Paths.get(VAULT_CONFIG_FILE))) {
+            props.store(out, "Vault GUI Configuration");
+        } catch (IOException ignored) {
+        }
     }
 
     private void configurePlaceholderBehavior(JComboBox<String> comboBox, String placeholder) {
@@ -187,7 +368,8 @@ public class VaultGUIApp {
                         items.add(line.trim());
                     }
                 }
-            } catch (IOException ignored) {}
+            } catch (IOException ignored) {
+            }
         }
         comboBox.removeAllItems();
         comboBox.addItem(defaultItem);
@@ -201,13 +383,15 @@ public class VaultGUIApp {
         if (Files.exists(path)) {
             try {
                 all.addAll(Files.readAllLines(path));
-            } catch (IOException ignored) {}
+            } catch (IOException ignored) {
+            }
         }
         if (all.add(item)) {
             try {
                 Files.write(path, all);
                 comboBox.addItem(item);
-            } catch (IOException ignored) {}
+            } catch (IOException ignored) {
+            }
         }
     }
 
@@ -233,13 +417,15 @@ public class VaultGUIApp {
 
     private void loadSecretsHistory() {
         Path path = Paths.get(LOCAL_HISTORY_FILE);
-        if (!Files.exists(path)) return;
+        if (!Files.exists(path)) {
+            return;
+        }
         try {
             java.util.List<String> lines = Files.readAllLines(path);
             for (String line : lines) {
                 String[] parts = line.split("::", 4);
                 if (parts.length == 4) {
-                    tableModel.addRow(new Object[]{parts[0], parts[1], parts[2], "****", "View/Delete"});
+                    tableModel.addRow(new Object[]{parts[0], parts[1], parts[2], "****", "⋮"});
                 }
             }
         } catch (IOException e) {
@@ -266,9 +452,14 @@ public class VaultGUIApp {
         return new String(inChars);
     }
 
-    static class ButtonRenderer extends JButton implements javax.swing.table.TableCellRenderer {
-        public Component getTableCellRendererComponent(JTable table, Object value, boolean isSelected, boolean hasFocus, int row, int col) {
-            setText((value == null) ? "" : value.toString());
+    static class ActionRenderer extends JLabel implements TableCellRenderer {
+
+        public ActionRenderer() {
+            setText("⋮");
+            setHorizontalAlignment(SwingConstants.CENTER);
+        }
+
+        public Component getTableCellRendererComponent(JTable table, Object value, boolean isSelected, boolean hasFocus, int row, int column) {
             return this;
         }
     }
