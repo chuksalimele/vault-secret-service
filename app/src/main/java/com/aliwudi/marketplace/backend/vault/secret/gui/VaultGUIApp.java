@@ -29,7 +29,7 @@ public class VaultGUIApp {
     private static final String ENCRYPTION_KEY = "change_this_key";
 
     private static DefaultTableModel tableModel;
-    private static final String VAULT_CONFIG_FILE = "vault_config.properties";
+    private static final String VAULT_CONFIG_FILE = "vault-config.properties";
 
     public static void main(String[] args) {
         System.setProperty("java.awt.headless", "false");
@@ -55,7 +55,6 @@ public class VaultGUIApp {
 
         Properties vaultConfig = loadVaultConfig();
         String vaultAddress = vaultConfig.getProperty("vault.url", "http://127.0.0.1:8200");
-        String vaultToken = vaultConfig.getProperty("vault.token", "");
 
         // Vault Configuration Panel
         JPanel configPanel = new JPanel(new GridBagLayout());
@@ -63,69 +62,89 @@ public class VaultGUIApp {
 
         GridBagConstraints c = new GridBagConstraints();
         c.insets = new Insets(5, 5, 5, 5);
+        c.fill = GridBagConstraints.HORIZONTAL;
+
+        // === Row 0: Vault Address and Apply Button ===
         c.gridx = 0;
         c.gridy = 0;
+        c.weightx = 0;
+        c.anchor = GridBagConstraints.EAST;
         configPanel.add(new JLabel("Vault Address:"), c);
 
         c.gridx = 1;
-        c.fill = GridBagConstraints.HORIZONTAL;
         c.weightx = 1.0;
-        JTextField urlField = new JTextField(vaultAddress);
+        JTextField urlField = new JTextField(vaultAddress, 30);
         configPanel.add(urlField, c);
 
         c.gridx = 2;
-        c.fill = GridBagConstraints.NONE;
         c.weightx = 0;
+        c.fill = GridBagConstraints.NONE;
         JButton applyButton = new JButton("Apply");
         configPanel.add(applyButton, c);
-        c.gridx = 3;
-        configPanel.add(new JLabel("Vault Token:"), c);
 
-        c.gridx = 4;
-        c.weightx = 1.0;
-        JPasswordField tokenField = new JPasswordField(vaultToken, 20);
-        configPanel.add(tokenField, c);
-
-        // 👁️ Toggle button
-        c.gridx = 5;
+        // === Row 1: Role ID ===
+        c.gridy = 1;
+        c.gridx = 0;
+        c.fill = GridBagConstraints.HORIZONTAL;
+        c.anchor = GridBagConstraints.EAST;
         c.weightx = 0;
-        JToggleButton showToggle = new JToggleButton("👁");
-        showToggle.setFocusable(false);
-        showToggle.setMargin(new Insets(2, 5, 2, 5));
-        char defaultEcho = (new JPasswordField()).getEchoChar();
+        configPanel.add(new JLabel("Role ID:"), c);
 
-        showToggle.addActionListener(e -> {
-            if (showToggle.isSelected()) {
-                tokenField.setEchoChar((char) 0);
-                showToggle.setText("🙈");
-            } else {
-                tokenField.setEchoChar(defaultEcho);
-                showToggle.setText("👁");
-            }
+        c.gridx = 1;
+        c.gridwidth = 2;
+        c.weightx = 1.0;
+        JTextField roleIdField = new JTextField(vaultConfig.getProperty("vault.roleId", ""), 30);
+        configPanel.add(roleIdField, c);
+        c.gridwidth = 1;
+
+        // === Row 2: Secret ID and Toggle Button ===
+        c.gridy = 2;
+        c.gridx = 0;
+        c.anchor = GridBagConstraints.EAST;
+        c.weightx = 0;
+        configPanel.add(new JLabel("Secret ID:"), c);
+
+        c.gridx = 1;
+        c.weightx = 1.0;
+        c.fill = GridBagConstraints.HORIZONTAL;
+        JPasswordField secretIdField = new JPasswordField(vaultConfig.getProperty("vault.secretId", ""), 30);
+        secretIdField.setEchoChar('\u2022'); // default echo char
+        configPanel.add(secretIdField, c);
+
+        c.gridx = 2;
+        c.weightx = 0;
+        c.fill = GridBagConstraints.NONE;
+        JToggleButton toggleButton = new JToggleButton("Show");
+        toggleButton.addActionListener(e -> {
+            boolean show = toggleButton.isSelected();
+            secretIdField.setEchoChar(show ? (char) 0 : '\u2022');
+            toggleButton.setText(show ? "Hide" : "Show");
         });
-        configPanel.add(showToggle, c);
+        configPanel.add(toggleButton, c);
 
         applyButton.addActionListener(e -> {
             String newAddress = urlField.getText().trim();
-            String newToken = tokenField.getText().trim();
+            String roleId = roleIdField.getText().trim();
+            String secretId = new String(secretIdField.getPassword()).trim();
 
-            if (!newAddress.isEmpty() && !newToken.isEmpty()) {
+            if (!newAddress.isEmpty() && !roleId.isEmpty() && !secretId.isEmpty()) {
                 try {
+                    String token = VaultTokenGenerator.getVaultTokenFromAppRole(newAddress, roleId, secretId);
                     VaultEndpoint endpoint = VaultEndpoint.from(new URI(newAddress));
-                    ClientAuthentication auth = new TokenAuthentication(newToken);
+                    ClientAuthentication auth = new TokenAuthentication(token);
                     VaultTemplate newTemplate = new VaultTemplate(endpoint, auth);
                     vaultTemplateRef[0] = newTemplate;
 
-                    saveVaultConfig(newAddress, newToken);
+                    saveVaultConfig(newAddress, roleId, secretId); // store for next time
 
                     JOptionPane.showMessageDialog(frame, "Vault configuration applied.", "Success", JOptionPane.INFORMATION_MESSAGE);
                 } catch (Exception ex) {
-                    JOptionPane.showMessageDialog(frame, "Failed to apply Vault config: " + ex.getMessage(), "Error", JOptionPane.ERROR_MESSAGE);
+                    ex.printStackTrace();
+                    JOptionPane.showMessageDialog(frame, "Login failed: " + ex.getMessage(), "Error", JOptionPane.ERROR_MESSAGE);
                 }
             } else {
-                JOptionPane.showMessageDialog(frame, "Vault address and token must not be empty", "Error", JOptionPane.ERROR_MESSAGE);
+                JOptionPane.showMessageDialog(frame, "Vault address, Role ID, and Secret ID must not be empty", "Error", JOptionPane.ERROR_MESSAGE);
             }
-
         });
 
         JPanel inputPanel = new JPanel(new GridBagLayout());
@@ -291,7 +310,9 @@ public class VaultGUIApp {
                 valueField.setText("");
                 JOptionPane.showMessageDialog(frame, "Secret saved successfully!", "Success", JOptionPane.INFORMATION_MESSAGE);
             } catch (Exception ex) {
+                ex.printStackTrace();
                 JOptionPane.showMessageDialog(frame, "Error saving secret: " + ex.getMessage(), "Error", JOptionPane.ERROR_MESSAGE);
+                
             }
         });
 
@@ -310,26 +331,25 @@ public class VaultGUIApp {
         frame.setVisible(true);
     }
 
-    private Properties loadVaultConfig() {
-        Properties props = new Properties();
-        Path path = Paths.get(VAULT_CONFIG_FILE);
-        if (Files.exists(path)) {
-            try (InputStream in = Files.newInputStream(path)) {
-                props.load(in);
-            } catch (IOException ignored) {
-            }
+    private void saveVaultConfig(String url, String roleId, String secretId) {
+        try (FileOutputStream out = new FileOutputStream(VAULT_CONFIG_FILE)) {
+            Properties props = new Properties();
+            props.setProperty("vault.url", url);
+            props.setProperty("vault.roleId", roleId);
+            props.setProperty("vault.secretId", secretId);
+            props.store(out, null);
+        } catch (IOException e) {
+            e.printStackTrace();
         }
-        return props;
     }
 
-    private void saveVaultConfig(String url, String token) {
+    private Properties loadVaultConfig() {
         Properties props = new Properties();
-        props.setProperty("vault.url", url);
-        props.setProperty("vault.token", token);
-        try (OutputStream out = Files.newOutputStream(Paths.get(VAULT_CONFIG_FILE))) {
-            props.store(out, "Vault GUI Configuration");
+        try (FileInputStream in = new FileInputStream(VAULT_CONFIG_FILE)) {
+            props.load(in);
         } catch (IOException ignored) {
         }
+        return props;
     }
 
     private void configurePlaceholderBehavior(JComboBox<String> comboBox, String placeholder) {
